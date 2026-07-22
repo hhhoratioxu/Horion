@@ -1,73 +1,65 @@
-import { ShieldCheck } from "lucide-react";
+import { Circle, Route, ShieldCheck } from "lucide-react";
+import { useLocation } from "react-router-dom";
 
+import { navigationItems } from "../../app/route-meta";
 import { coreStatePresentation } from "../../core/core-status";
 import { useCoreStore } from "../../stores/core-store";
-import type { StatusTone } from "../../types/status";
-import { StatusChip } from "../ui/status-chip";
+import { useProfileStore } from "../../stores/profile-store";
+import { useProxyStore } from "../../stores/proxy-store";
+import { cn } from "../../utils/cn";
 
-const unavailableStatuses = [
-  { label: "当前配置", value: "未接入" },
-  { label: "当前节点", value: "未接入" },
-  { label: "代理模式", value: "未接入" },
-  { label: "系统代理", value: "未接入" },
-  { label: "TUN", value: "未接入" },
-] as const;
+const modeLabels = { rule: "规则", global: "全局", direct: "直连" } as const;
 
 export function AppHeader() {
+  const location = useLocation();
   const snapshot = useCoreStore((state) => state.snapshot);
-  const runtimeAvailable = useCoreStore((state) => state.runtimeAvailable);
   const initialized = useCoreStore((state) => state.initialized);
-  const statusError = useCoreStore((state) => state.statusError);
+  const runtimeAvailable = useCoreStore((state) => state.runtimeAvailable);
+  const activeProfile = useProfileStore((state) => state.profiles.find((item) => item.active));
+  const mode = useProxyStore((state) => state.overview?.mode ?? null);
+  const page = navigationItems.find((item) =>
+    item.matchPrefix
+      ? location.pathname.startsWith(item.matchPrefix)
+      : location.pathname === item.path,
+  );
   const presentation = coreStatePresentation[snapshot.state];
-
-  let coreValue = presentation.label;
-  let coreTone: StatusTone = presentation.tone;
-  if (!runtimeAvailable && initialized) {
-    coreValue = "仅桌面端";
-    coreTone = "warning";
-  } else if (statusError) {
-    coreValue = "读取失败";
-    coreTone = "negative";
-  } else if (!initialized) {
-    coreValue = "检测中";
-    coreTone = "neutral";
-  } else if (snapshot.state === "running" && !snapshot.healthy) {
-    coreValue = "运行异常";
-    coreTone = "warning";
-  }
-
-  const controllerValue = snapshot.controller_available ? "可用" : "未连接";
-  const controllerTone: StatusTone = snapshot.controller_available
-    ? "positive"
-    : snapshot.state === "running"
-      ? "warning"
-      : "neutral";
+  const coreOnline = snapshot.state === "running" && snapshot.healthy;
 
   return (
-    <header className="border-b border-line bg-surface/82 px-5 backdrop-blur-xl xl:px-6">
-      <div className="mx-auto flex h-[68px] max-w-[1680px] items-center gap-4">
-        <div className="hidden min-w-40 shrink-0 2xl:block">
-          <div className="flex items-center gap-2 text-xs font-semibold text-text">
-            <ShieldCheck aria-hidden="true" className="text-accent" size={15} />
-            本地控制台
-          </div>
-          <p className="mt-1 text-[11px] text-text-subtle">
-            {snapshot.state === "running" ? "Mihomo 进程已启动" : "系统代理保持关闭"}
-          </p>
+    <header className="shrink-0 border-b border-line bg-canvas/90 px-5 backdrop-blur-xl xl:px-6">
+      <div className="mx-auto flex h-16 max-w-[1680px] items-center justify-between gap-5">
+        <div className="min-w-0">
+          <p className="text-[10px] font-semibold tracking-[0.16em] text-text-subtle uppercase">Horion / Desktop</p>
+          <h1 className="mt-0.5 truncate text-sm font-semibold text-text">{page?.label ?? "Horion"}</h1>
         </div>
-        <div
-          aria-label="运行状态"
-          className="scrollbar-none flex min-w-0 flex-1 items-center gap-2 overflow-x-auto"
-        >
-          {unavailableStatuses.map((status) => (
-            <StatusChip key={status.label} {...status} />
-          ))}
-          <StatusChip label="内核" tone={coreTone} value={coreValue} />
-          <StatusChip
-            label="Controller"
-            tone={controllerTone}
-            value={controllerValue}
-          />
+        <div aria-label="运行状态" className="flex min-w-0 items-center justify-end gap-2">
+          <div className="hidden h-8 max-w-48 items-center gap-2 rounded-lg border border-line bg-surface px-2.5 text-[11px] text-text-muted md:flex" title={activeProfile?.name ?? "尚未激活配置"}>
+            <ShieldCheck aria-hidden="true" className={activeProfile ? "text-positive" : "text-text-subtle"} size={13} />
+            <span className="truncate">{activeProfile?.name ?? "未选择配置"}</span>
+          </div>
+          <div className="hidden h-8 items-center gap-2 rounded-lg border border-line bg-surface px-2.5 text-[11px] text-text-muted xl:flex">
+            <Route aria-hidden="true" size={13} />
+            {mode ? `${modeLabels[mode]}模式` : "模式未连接"}
+          </div>
+          <div
+            className={cn(
+              "flex h-8 items-center gap-2 rounded-lg border px-2.5 text-[11px] font-semibold",
+              coreOnline
+                ? "border-positive/25 bg-positive-soft text-positive"
+                : snapshot.state === "error" || snapshot.state === "crashed"
+                  ? "border-negative/25 bg-negative-soft text-negative"
+                  : "border-line bg-surface text-text-muted",
+            )}
+            role="status"
+          >
+            <Circle aria-hidden="true" className={cn("fill-current", !initialized && "animate-pulse")} size={7} />
+            {!initialized
+              ? "检测中"
+              : !runtimeAvailable
+                ? "桌面能力不可用"
+                : presentation.label}
+          </div>
+          <span className="hidden h-8 items-center rounded-lg border border-line bg-surface px-2.5 text-[10px] text-text-subtle 2xl:flex">系统代理未接入</span>
         </div>
       </div>
     </header>

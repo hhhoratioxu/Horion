@@ -14,9 +14,22 @@ use std::{
 
 use chrono::{SecondsFormat, Utc};
 use rand::RngCore;
-use reqwest::{header::AUTHORIZATION, redirect::Policy, Client};
+use reqwest::{
+    header::{AUTHORIZATION, CONTENT_TYPE},
+    redirect::Policy,
+    Client, Method,
+};
 use serde::Deserialize;
+use url::Url;
 use zeroize::Zeroizing;
+
+use crate::{
+    controller::{
+        ControllerError, ControllerFuture, ControllerMethod, ControllerRequest, ControllerResponse,
+        ControllerResult, ControllerTransport, ProxyMetadata,
+    },
+    profile::{redact_urls, ActiveProxyMetadata, ProfileService},
+};
 
 use super::{
     error::{CoreError, CoreResult},
@@ -27,6 +40,7 @@ use super::{
 
 const LOG_CAPACITY: usize = 1_000;
 const MAX_LOG_LINE_BYTES: usize = 16 * 1024;
+const MAX_CONTROLLER_ERROR_BYTES: usize = 64 * 1024;
 const START_TIMEOUT: Duration = Duration::from_secs(15);
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -102,10 +116,13 @@ pub struct CoreService {
     operation: tokio::sync::Mutex<()>,
     controller_client: Client,
     shutting_down: AtomicBool,
+    profiles: ProfileService,
 }
 
 impl CoreService {
     pub fn new(app_data: impl AsRef<Path>) -> CoreResult<Self> {
+        let profiles = ProfileService::new(app_data.as_ref())
+            .map_err(|error| CoreError::Configuration(redact_urls(&error.to_string())))?;
         let paths = CorePaths::create(app_data)?;
         let installer = CoreInstaller::new(paths.clone())?;
         let logs = Arc::new(Mutex::new(VecDeque::with_capacity(LOG_CAPACITY)));
@@ -177,11 +194,114 @@ impl CoreService {
             operation: tokio::sync::Mutex::new(()),
             controller_client,
             shutting_down: AtomicBool::new(false),
+            profiles,
         };
         if let Some(warning) = startup_warning {
             service.push_log("error", "system", warning);
         }
         Ok(service)
+    }
+
+    pub(crate) fn profiles(&self) -> ProfileService {
+        self.profiles.clone()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn active_proxy_metadata(&self) -> CoreResult<Vec<ActiveProxyMetadata>> {
+        self.profiles
+            .active_proxy_metadata_unlocked()
+            .map_err(|error| CoreError::Configuration(redact_urls(&error.to_string())))
+    }
+
+    async fn controller_request(
+        &self,
+        request: ControllerRequest,
+    ) -> ControllerResult<ControllerResponse> {
+        let controller = {
+            let mut runtime = self
+                .lock_runtime()
+                .map_err(|_| ControllerError::Unavailable)?;
+            self.refresh_child(&mut runtime)
+                .map_err(|_| ControllerError::Unavailable)?;
+            if runtime.snapshot.state != CoreLifecycle::Running {
+                return Err(ControllerError::Unavailable);
+            }
+            runtime
+                .controller
+                .clone()
+                .ok_or(ControllerError::Unavailable)?
+        };
+
+        // Do not trust a previously cached health bit. Each user-facing
+        // Controller operation confirms the current process and secret first.
+        let healthy = self.controller_health(&controller).await;
+        {
+            let mut runtime = self
+                .lock_runtime()
+                .map_err(|_| ControllerError::Unavailable)?;
+            self.refresh_child(&mut runtime)
+                .map_err(|_| ControllerError::Unavailable)?;
+            let same_controller = runtime.controller.as_ref().is_some_and(|current| {
+                current.address == controller.address
+                    && Arc::ptr_eq(&current.secret, &controller.secret)
+            });
+            if runtime.snapshot.state != CoreLifecycle::Running || !same_controller {
+                return Err(ControllerError::Unavailable);
+            }
+            runtime.snapshot.healthy = healthy;
+            runtime.snapshot.controller_available = healthy;
+        }
+        if !healthy {
+            return Err(ControllerError::Unavailable);
+        }
+
+        let url = build_controller_url(controller.address, &request.path_segments, &request.query)?;
+
+        let method = match request.method {
+            ControllerMethod::Get => Method::GET,
+            ControllerMethod::Put => Method::PUT,
+            ControllerMethod::Patch => Method::PATCH,
+        };
+        let authorization = Zeroizing::new(format!("Bearer {}", controller.secret.as_str()));
+        let mut builder = self
+            .controller_client
+            .request(method, url)
+            .header(AUTHORIZATION, authorization.as_str())
+            .timeout(request.timeout);
+        if let Some(body) = request.json_body {
+            builder = builder
+                .header(CONTENT_TYPE, "application/json")
+                .body(body.to_string());
+        }
+        let mut response = builder
+            .send()
+            .await
+            .map_err(|_| ControllerError::Transport)?;
+        let status = response.status().as_u16();
+        let response_limit = controller_response_limit(status, request.response_limit);
+        if response
+            .content_length()
+            .is_some_and(|length| length > response_limit as u64)
+        {
+            return Err(ControllerError::ResponseTooLarge);
+        }
+        let mut body = Vec::with_capacity(
+            response
+                .content_length()
+                .unwrap_or_default()
+                .min(response_limit as u64) as usize,
+        );
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|_| ControllerError::Transport)?
+        {
+            if body.len().saturating_add(chunk.len()) > response_limit {
+                return Err(ControllerError::ResponseTooLarge);
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(ControllerResponse { status, body })
     }
 
     pub async fn status(&self) -> CoreResult<CoreSnapshot> {
@@ -304,6 +424,105 @@ impl CoreService {
         self.start_locked().await
     }
 
+    pub async fn validate_profile_content(&self, content: &[u8]) -> CoreResult<()> {
+        let _operation = self.operation.lock().await;
+        let (_, executable) = self
+            .installer
+            .load_manifest()?
+            .ok_or(CoreError::NotInstalled)?;
+        let (_, address) = reserve_loopback_address()?;
+        let controller = ControllerRuntime {
+            address,
+            secret: Arc::new(ControllerSecret::generate()),
+            expected_version: String::new(),
+        };
+        let config = build_runtime_config(&controller, Some(content))?;
+        self.preflight_core(&executable, &config, &controller)
+    }
+
+    pub(crate) async fn activate_profile_locked(
+        &self,
+        profiles: &ProfileService,
+        id: &str,
+        content: &[u8],
+    ) -> CoreResult<CoreSnapshot> {
+        let _operation = self.operation.lock().await;
+        let (_, executable) = self
+            .installer
+            .load_manifest()?
+            .ok_or(CoreError::NotInstalled)?;
+        let (_, address) = reserve_loopback_address()?;
+        let validation_controller = ControllerRuntime {
+            address,
+            secret: Arc::new(ControllerSecret::generate()),
+            expected_version: String::new(),
+        };
+        let config = build_runtime_config(&validation_controller, Some(content))?;
+        self.preflight_core(&executable, &config, &validation_controller)?;
+
+        let was_running = {
+            let mut runtime = self.lock_runtime()?;
+            self.refresh_child(&mut runtime)?;
+            runtime.child.is_some() || runtime.snapshot.state == CoreLifecycle::Running
+        };
+        let previous = profiles
+            .active_id_unlocked()
+            .map_err(|error| CoreError::Configuration(redact_urls(&error.to_string())))?;
+        if was_running {
+            self.stop_locked()?;
+        }
+        if let Err(error) = profiles.set_active_id_unlocked(Some(id)) {
+            if was_running {
+                let _ = self.start_locked().await;
+            }
+            return Err(CoreError::Configuration(redact_urls(&error.to_string())));
+        }
+        if !was_running {
+            return Ok(self.lock_runtime()?.snapshot.clone());
+        }
+
+        match self.start_locked().await {
+            Ok(snapshot) => Ok(snapshot),
+            Err(activation_error) => {
+                let rollback_result = profiles.set_active_id_unlocked(previous.as_deref());
+                let restore_result = if rollback_result.is_ok() {
+                    self.start_locked().await.map(|_| ())
+                } else {
+                    Err(CoreError::Configuration(
+                        "could not restore the previous active profile".to_owned(),
+                    ))
+                };
+                let mut message = format!("activation failed: {activation_error}");
+                if let Err(error) = rollback_result {
+                    message.push_str(&format!(
+                        "; active profile rollback failed: {}",
+                        redact_urls(&error.to_string())
+                    ));
+                }
+                if let Err(error) = restore_result {
+                    message.push_str(&format!(
+                        "; previous core state could not be restored: {error}"
+                    ));
+                }
+                Err(CoreError::Configuration(redact_urls(&message)))
+            }
+        }
+    }
+
+    pub(crate) async fn reapply_active_profile_if_running(&self) -> CoreResult<CoreSnapshot> {
+        let _operation = self.operation.lock().await;
+        let running = {
+            let mut runtime = self.lock_runtime()?;
+            self.refresh_child(&mut runtime)?;
+            runtime.child.is_some() || runtime.snapshot.state == CoreLifecycle::Running
+        };
+        if !running {
+            return Ok(self.lock_runtime()?.snapshot.clone());
+        }
+        self.stop_locked()?;
+        self.start_locked().await
+    }
+
     pub fn logs(&self) -> CoreResult<Vec<CoreLogEntry>> {
         let logs = self.logs.lock().map_err(|_| CoreError::Synchronization)?;
         Ok(logs.iter().cloned().collect())
@@ -376,7 +595,11 @@ impl CoreService {
             secret: Arc::clone(&secret),
             expected_version,
         };
-        let config = build_runtime_config(&controller);
+        let active_profile = self
+            .profiles
+            .active_content_unlocked()
+            .map_err(|error| CoreError::Configuration(redact_urls(&error.to_string())))?;
+        let config = build_runtime_config(&controller, active_profile.as_deref())?;
         if let Err(error) = self.preflight_core(&executable, &config, &controller) {
             self.record_failure(&error)?;
             return Err(error);
@@ -533,6 +756,7 @@ impl CoreService {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        sanitize_core_environment(&mut command);
         configure_hidden_process(&mut command);
         let mut child = command.spawn().map_err(|error| {
             CoreError::Process(format!(
@@ -639,6 +863,7 @@ impl CoreService {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        sanitize_core_environment(&mut command);
         configure_hidden_process(&mut command);
         let mut child = command
             .spawn()
@@ -786,9 +1011,65 @@ impl CoreService {
     }
 }
 
+impl ControllerTransport for CoreService {
+    fn send(&self, request: ControllerRequest) -> ControllerFuture<'_> {
+        Box::pin(async move { self.controller_request(request).await })
+    }
+
+    fn active_proxy_metadata(&self) -> ControllerResult<Vec<ProxyMetadata>> {
+        CoreService::active_proxy_metadata(self)
+            .map(|metadata| {
+                metadata
+                    .into_iter()
+                    .map(|proxy| ProxyMetadata {
+                        name: proxy.name,
+                        proxy_type: proxy.proxy_type,
+                        server: proxy.server,
+                        port: proxy.port,
+                    })
+                    .collect()
+            })
+            .map_err(|_| ControllerError::InvalidResponse("profile metadata"))
+    }
+}
+
 #[derive(Deserialize)]
 struct ControllerVersion {
     version: String,
+}
+
+fn build_controller_url(
+    address: SocketAddr,
+    path_segments: &[String],
+    query: &[(String, String)],
+) -> ControllerResult<Url> {
+    let mut url =
+        Url::parse(&format!("http://{address}/")).map_err(|_| ControllerError::Transport)?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|_| ControllerError::Transport)?;
+        segments.clear();
+        for segment in path_segments {
+            segments.push(segment);
+        }
+    }
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(
+            query
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        );
+    }
+    Ok(url)
+}
+
+fn controller_response_limit(status: u16, requested_limit: usize) -> usize {
+    if (200..300).contains(&status) {
+        requested_limit
+    } else {
+        requested_limit.min(MAX_CONTROLLER_ERROR_BYTES)
+    }
 }
 
 fn ensure_install_allowed(runtime: &Runtime) -> CoreResult<()> {
@@ -820,25 +1101,91 @@ fn reserve_loopback_address() -> CoreResult<(TcpListener, SocketAddr)> {
     Ok((listener, address))
 }
 
-fn build_runtime_config(controller: &ControllerRuntime) -> Zeroizing<String> {
-    Zeroizing::new(format!(
-        concat!(
-            "mixed-port: 0\n",
-            "allow-lan: false\n",
-            "ipv6: false\n",
-            "mode: direct\n",
-            "log-level: warning\n",
-            "geo-auto-update: false\n",
-            "external-controller: \"{}\"\n",
-            "secret: \"{}\"\n",
-            "proxies: []\n",
-            "proxy-groups: []\n",
-            "rules:\n",
-            "  - MATCH,DIRECT\n"
+fn build_runtime_config(
+    controller: &ControllerRuntime,
+    profile: Option<&[u8]>,
+) -> CoreResult<Zeroizing<String>> {
+    let source = profile.unwrap_or(
+        b"mixed-port: 0\nipv6: false\nmode: direct\nlog-level: warning\ngeo-auto-update: false\nproxies: []\nproxy-groups: []\nrules:\n  - MATCH,DIRECT\n",
+    );
+    let mut value: serde_yaml_ng::Value = serde_yaml_ng::from_slice(source)
+        .map_err(|error| CoreError::Configuration(format!("YAML is invalid: {error}")))?;
+    value.apply_merge().map_err(|error| {
+        CoreError::Configuration(format!("YAML merge expansion failed: {error}"))
+    })?;
+    let mapping = value.as_mapping_mut().ok_or_else(|| {
+        CoreError::Configuration("the YAML document root must be a mapping".to_owned())
+    })?;
+    for key in [
+        "external-controller",
+        "external-controller-tls",
+        "external-controller-unix",
+        "external-controller-pipe",
+        "external-controller-routing-mark",
+        "external-controller-cors",
+        "external-doh-server",
+        "secret",
+        "authentication",
+        "skip-auth-prefixes",
+        "external-ui",
+        "external-ui-url",
+        "external-ui-name",
+        "cors-allowed-origins",
+        "cors-allowed-private-network",
+        "tun",
+        "listeners",
+        "tunnels",
+        "tuic-server",
+        "iptables",
+        "ss-config",
+        "vmess-config",
+        "redir-port",
+        "tproxy-port",
+    ] {
+        mapping.remove(serde_yaml_ng::Value::String(key.to_owned()));
+    }
+    if let Some(dns) = mapping
+        .get_mut(serde_yaml_ng::Value::String("dns".to_owned()))
+        .and_then(serde_yaml_ng::Value::as_mapping_mut)
+    {
+        dns.remove(serde_yaml_ng::Value::String("listen".to_owned()));
+    }
+    for (key, replacement) in [
+        ("allow-lan", serde_yaml_ng::Value::Bool(false)),
+        (
+            "bind-address",
+            serde_yaml_ng::Value::String("127.0.0.1".to_owned()),
         ),
-        controller.address,
-        controller.secret.as_str()
-    ))
+        (
+            "external-controller",
+            serde_yaml_ng::Value::String(controller.address.to_string()),
+        ),
+        (
+            "secret",
+            serde_yaml_ng::Value::String(controller.secret.as_str().to_owned()),
+        ),
+    ] {
+        mapping.insert(serde_yaml_ng::Value::String(key.to_owned()), replacement);
+    }
+    let mut cors = serde_yaml_ng::Mapping::new();
+    cors.insert(
+        serde_yaml_ng::Value::String("allow-origins".to_owned()),
+        serde_yaml_ng::Value::Sequence(Vec::new()),
+    );
+    cors.insert(
+        serde_yaml_ng::Value::String("allow-private-network".to_owned()),
+        serde_yaml_ng::Value::Bool(false),
+    );
+    mapping.insert(
+        serde_yaml_ng::Value::String("external-controller-cors".to_owned()),
+        serde_yaml_ng::Value::Mapping(cors),
+    );
+    let serialized = serde_yaml_ng::to_string(&value).map_err(|error| {
+        CoreError::Configuration(format!(
+            "could not serialize the safe runtime YAML: {error}"
+        ))
+    })?;
+    Ok(Zeroizing::new(serialized))
 }
 
 fn read_output_bounded<R: Read>(reader: Option<R>, limit: usize) -> Vec<u8> {
@@ -933,7 +1280,7 @@ fn emit_captured_line(
     bytes: &[u8],
     truncated: bool,
 ) {
-    let mut message = String::from_utf8_lossy(bytes)
+    let mut message = redact_urls(&String::from_utf8_lossy(bytes))
         .trim_end_matches('\r')
         .replace(secret.as_str(), "[REDACTED]");
     if truncated {
@@ -979,11 +1326,70 @@ fn configure_hidden_process(command: &mut Command) {
     }
 }
 
+fn sanitize_core_environment(command: &mut Command) {
+    for variable in [
+        "CLASH_CONFIG_FILE",
+        "CLASH_CONFIG_STRING",
+        "CLASH_AGE_SECRET_KEY",
+        "CLASH_OVERRIDE_EXTERNAL_UI_DIR",
+        "CLASH_OVERRIDE_EXTERNAL_CONTROLLER",
+        "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_TLS",
+        "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_UNIX",
+        "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE",
+        "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_ROUTING_MARK",
+        "CLASH_OVERRIDE_SECRET",
+        "CLASH_POST_UP",
+        "CLASH_POST_DOWN",
+        "SAFE_PATHS",
+    ] {
+        command.env_remove(variable);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{emit_captured_line, ControllerSecret, CoreService, LOG_CAPACITY};
+    use super::{
+        build_controller_url, build_runtime_config, controller_response_limit, emit_captured_line,
+        sanitize_core_environment, ControllerRuntime, ControllerSecret, CoreService, LOG_CAPACITY,
+        MAX_CONTROLLER_ERROR_BYTES,
+    };
+
+    #[test]
+    fn controller_url_encodes_each_untrusted_name_as_one_segment() {
+        let address = SocketAddr::from((Ipv4Addr::LOCALHOST, 9090));
+        let url = build_controller_url(
+            address,
+            &["proxies".to_owned(), "选择 🚀 /?#% %2F".to_owned()],
+            &[("url".to_owned(), "https://example.test/a?b=1".to_owned())],
+        )
+        .expect("Controller URL");
+
+        assert_eq!(
+            url.path(),
+            "/proxies/%E9%80%89%E6%8B%A9%20%F0%9F%9A%80%20%2F%3F%23%25%20%252F"
+        );
+        assert_eq!(
+            url.query_pairs().collect::<Vec<_>>(),
+            vec![("url".into(), "https://example.test/a?b=1".into())]
+        );
+        assert_eq!(url.host_str(), Some("127.0.0.1"));
+    }
+
+    #[test]
+    fn controller_error_bodies_never_use_the_large_success_limit() {
+        assert_eq!(
+            controller_response_limit(200, 8 * 1024 * 1024),
+            8 * 1024 * 1024
+        );
+        assert_eq!(
+            controller_response_limit(500, 8 * 1024 * 1024),
+            MAX_CONTROLLER_ERROR_BYTES
+        );
+        assert_eq!(controller_response_limit(401, 1024), 1024);
+    }
     use std::{
         collections::VecDeque,
+        net::{Ipv4Addr, SocketAddr},
         sync::{Arc, Mutex},
     };
 
@@ -1005,6 +1411,158 @@ mod tests {
         let entries = service.logs().expect("logs");
         assert_eq!(entries.len(), LOG_CAPACITY);
         assert_eq!(entries.first().expect("first").message, "5");
+    }
+
+    #[test]
+    fn profile_runtime_removes_unsafe_controller_surface() {
+        let controller = ControllerRuntime {
+            address: SocketAddr::from((Ipv4Addr::LOCALHOST, 19090)),
+            secret: Arc::new(ControllerSecret(zeroize::Zeroizing::new(
+                "runtime-secret".to_owned(),
+            ))),
+            expected_version: String::new(),
+        };
+        let malicious = br#"
+unsafe-defaults: &unsafe-defaults
+  external-controller-pipe: merged-unsafe
+  listeners: [{name: unsafe}]
+<<: *unsafe-defaults
+allow-lan: true
+bind-address: 0.0.0.0
+external-controller: 0.0.0.0:9090
+external-controller-tls: 0.0.0.0:9443
+external-controller-unix: /tmp/unsafe.sock
+external-controller-pipe: mihomo-unsafe
+secret: attacker-controlled
+authentication: [user:password]
+skip-auth-prefixes: [/]
+external-ui: ./ui
+external-ui-url: https://example.com/ui.zip
+external-ui-name: unsafe
+cors-allowed-origins: ['*']
+cors-allowed-private-network: true
+external-controller-cors: {allow-origins: ['*'], allow-private-network: true}
+external-controller-routing-mark: 233
+external-doh-server: /dns-query
+tun: {enable: true}
+listeners: [{name: unsafe-direct}]
+tunnels: [{network: tcp, address: 0.0.0.0:9999, target: example.com:80}]
+tuic-server: {enable: true}
+iptables: {enable: true}
+ss-config: ss.yaml
+vmess-config: vmess.yaml
+redir-port: 7892
+tproxy-port: 7893
+dns: {enable: true, listen: 0.0.0.0:1053, nameserver: [1.1.1.1]}
+proxies: []
+rules: [MATCH,DIRECT]
+"#;
+        let rendered = build_runtime_config(&controller, Some(malicious)).expect("safe config");
+        let value: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&rendered).expect("rendered YAML");
+        let mapping = value.as_mapping().expect("mapping");
+        let get = |key: &str| mapping.get(serde_yaml_ng::Value::String(key.to_owned()));
+        assert_eq!(
+            get("allow-lan").and_then(serde_yaml_ng::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            get("bind-address").and_then(serde_yaml_ng::Value::as_str),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            get("external-controller").and_then(serde_yaml_ng::Value::as_str),
+            Some("127.0.0.1:19090")
+        );
+        assert_eq!(
+            get("secret").and_then(serde_yaml_ng::Value::as_str),
+            Some("runtime-secret")
+        );
+        for key in [
+            "external-controller-tls",
+            "external-controller-unix",
+            "external-controller-pipe",
+            "external-controller-routing-mark",
+            "external-doh-server",
+            "authentication",
+            "skip-auth-prefixes",
+            "external-ui",
+            "external-ui-url",
+            "external-ui-name",
+            "cors-allowed-origins",
+            "cors-allowed-private-network",
+            "tun",
+            "listeners",
+            "tunnels",
+            "tuic-server",
+            "iptables",
+            "ss-config",
+            "vmess-config",
+            "redir-port",
+            "tproxy-port",
+        ] {
+            assert!(get(key).is_none(), "unsafe key survived: {key}");
+        }
+        let dns = get("dns")
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .expect("DNS mapping preserved");
+        assert!(dns
+            .get(serde_yaml_ng::Value::String("listen".to_owned()))
+            .is_none());
+        let cors = get("external-controller-cors")
+            .and_then(serde_yaml_ng::Value::as_mapping)
+            .expect("safe Controller CORS mapping");
+        assert_eq!(
+            cors.get(serde_yaml_ng::Value::String("allow-origins".to_owned()))
+                .and_then(serde_yaml_ng::Value::as_sequence)
+                .map(Vec::len),
+            Some(0)
+        );
+        assert_eq!(
+            cors.get(serde_yaml_ng::Value::String(
+                "allow-private-network".to_owned()
+            ))
+            .and_then(serde_yaml_ng::Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn core_commands_remove_environment_override_and_hook_variables() {
+        let mut command = std::process::Command::new("mihomo.exe");
+        let variables = [
+            "CLASH_CONFIG_FILE",
+            "CLASH_CONFIG_STRING",
+            "CLASH_AGE_SECRET_KEY",
+            "CLASH_OVERRIDE_EXTERNAL_UI_DIR",
+            "CLASH_OVERRIDE_EXTERNAL_CONTROLLER",
+            "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_TLS",
+            "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_UNIX",
+            "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_PIPE",
+            "CLASH_OVERRIDE_EXTERNAL_CONTROLLER_ROUTING_MARK",
+            "CLASH_OVERRIDE_SECRET",
+            "CLASH_POST_UP",
+            "CLASH_POST_DOWN",
+            "SAFE_PATHS",
+        ];
+        for variable in variables {
+            command.env(variable, "attacker-controlled");
+        }
+        sanitize_core_environment(&mut command);
+        let removed = command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value
+                    .is_none()
+                    .then_some(key.to_string_lossy().into_owned())
+            })
+            .collect::<std::collections::HashSet<_>>();
+        for variable in variables {
+            assert!(
+                removed.contains(variable),
+                "environment survived: {variable}"
+            );
+        }
     }
 
     #[cfg(windows)]

@@ -25,6 +25,8 @@ pub enum CoreError {
     Process(String),
     #[error("Mihomo Controller did not become healthy before the deadline")]
     HealthTimeout,
+    #[error("profile configuration failed: {0}")]
+    Configuration(String),
     #[error("invalid lifecycle transition: {0}")]
     InvalidTransition(String),
     #[error("filesystem operation failed while {action}: {source}")]
@@ -55,6 +57,7 @@ impl CoreError {
             Self::InvalidManifest(_) => "manifest_invalid",
             Self::Process(_) => "process_failed",
             Self::HealthTimeout => "health_timeout",
+            Self::Configuration(_) => "profile_configuration_invalid",
             Self::InvalidTransition(_) => "state_transition_invalid",
             Self::Io { .. } => "filesystem_error",
             Self::Synchronization => "synchronization_error",

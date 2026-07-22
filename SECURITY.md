@@ -1,16 +1,16 @@
 # Security Policy
 
-Horion treats process execution, downloaded binaries, local file paths, and
-Controller credentials as security boundaries. Version 0.2.0 manages a real
-Mihomo child process but intentionally does not manage subscriptions, system
-proxy settings, or TUN.
+Horion treats process execution, downloaded binaries, local files,
+subscriptions, and Controller credentials as security boundaries. Version
+0.3.0 manages profiles and proxy nodes, while system proxy and TUN remain
+explicitly outside the supported feature set.
 
 ## Supported versions
 
 | Version | Security fixes |
 | --- | --- |
-| 0.2.x | Supported while it is the current development/release line |
-| 0.1.x | No longer supported |
+| 0.3.x | Supported while it is the current development/release line |
+| 0.2.x and earlier | No longer supported |
 
 Horion does not yet include an in-app updater. Obtain builds and source only
 from the project's GitHub repository and inspect release information before
@@ -33,7 +33,7 @@ issue tracker.
 Mihomo is not embedded in the Horion installer. Opening Horion does not fetch a
 core. Only the user's explicit official-install action makes a network request.
 
-Horion v0.2.0 is pinned to Mihomo `v1.19.29` and does not query `latest`:
+Horion v0.3.0 is pinned to Mihomo `v1.19.29` and does not query `latest`:
 
 | Architecture | Archive | Exact bytes | SHA-256 |
 | --- | --- | ---: | --- |
@@ -80,8 +80,14 @@ For every start, Horion:
 
 - allocates an IPv4 loopback Controller address with an ephemeral port;
 - creates a fresh 32-byte random secret;
-- passes the minimal configuration through stdin rather than a configuration
-  file;
+- parses the active YAML, expands merge keys, removes unmanaged Controller,
+  UI, CORS, TUN, inbound-server, tunnel, and DNS-listener settings;
+- forces ordinary proxy listeners to IPv4 loopback and injects a restrictive
+  Controller CORS policy;
+- removes inherited `CLASH_*` overrides, lifecycle hooks, and `SAFE_PATHS`
+  from the child environment;
+- passes the resulting configuration through stdin rather than a runtime
+  configuration file;
 - first runs `mihomo -t` against that same in-memory configuration;
 - launches the managed executable only if the preflight succeeds;
 - authenticates `GET /version` with the secret and checks the installed version;
@@ -94,8 +100,45 @@ future code must not expose the address or secret to arbitrary frontend content.
 The health client bypasses configured system proxies.
 
 The application does not need administrator privileges for this lifecycle.
-Version 0.2.0 does not alter the Windows proxy or install a privileged TUN
-helper.
+Version 0.3.0 does not alter the Windows proxy or install a privileged TUN
+helper. A profile cannot silently enable TUN or expose an unmanaged inbound
+listener; those capabilities require a future, explicit security design.
+
+## Profiles and subscriptions
+
+Managed profiles live below `%APPDATA%\io.horion.desktop\profiles\`. Horion
+requires a UTF-8 YAML mapping no larger than 8 MiB, validates it with the
+installed Mihomo executable, uses atomic writes, and retains at most ten
+pre-change backups. Activating or reapplying a profile uses stop/start of the
+exact owned child. If the new configuration cannot start, Horion restores the
+previous content, revision, active profile, and—where possible—the previous
+running core.
+
+Subscription downloads require HTTPS, reject URL user information and
+fragments, restrict redirects to HTTPS, enforce connection/total timeouts,
+bound streamed response bytes, and retry only transient failures. The complete
+subscription URL may contain a bearer token, so it is stored in Windows
+Credential Manager. Profile metadata and frontend responses contain only the
+hostname and a generated credential key.
+
+Adding a subscription is an explicit network authorization by the user. HTTPS
+does not make a profile trustworthy: the remote YAML can still describe proxy
+servers, rules, and providers. Horion removes local control-plane and inbound
+surfaces before execution, but users should add only providers they trust.
+
+Profile YAML is available to the WebView only when the user explicitly opens
+the editor. It is not written to localStorage. Revision checks reject stale
+editor saves rather than silently overwriting a newer managed version.
+
+## Node Controller access
+
+The frontend cannot supply a Controller address, secret, delay-test URL, or
+arbitrary API path. Rust constructs URLs from the current private loopback
+runtime, encodes proxy names as individual path segments, adds the Bearer
+secret, validates requested names against a fresh proxy overview, and bounds
+all response bodies. Delay tests use a fixed HTTPS 204 endpoint and a bounded
+timeout. Complete Controller objects are converted to a narrow Horion model;
+credentials and provider configuration are not returned to the WebView.
 
 ## Logs and sensitive data
 
@@ -103,25 +146,26 @@ Core logs are held in memory, capped at 1,000 entries, and lost when Horion
 exits. Individual process-output lines are capped at 16 KiB. The generated
 Controller secret is replaced with `[REDACTED]` before an entry reaches the UI.
 
-No subscription or profile handling exists yet, so Horion should never receive
-those credentials in normal v0.2.0 operation. Do not paste secrets into local
-paths, test output, screenshots, public issues, or future diagnostic bundles.
-Secret redaction is narrowly scoped and must not be treated as a general-purpose
-credential scrubber.
+Controller secrets and URL-shaped values are redacted from captured core and
+validation output. Subscription errors report only the hostname and a bounded,
+sanitized reason. Do not paste subscription URLs, profile credentials, local
+paths, traffic data, or unreviewed logs into screenshots or public issues.
+Redaction remains defense in depth and must not be treated as a general-purpose
+credential scanner.
 
 ## Network and privacy boundary
 
-Horion contains no advertising, analytics, or telemetry. The explicit official
-install contacts GitHub's release infrastructure, which necessarily receives
-ordinary connection metadata such as the client IP address. Starting the
-minimal core is not equivalent to enabling a proxy, and v0.2.0 does not import
-subscriptions, select nodes, expose proxy listeners, modify system proxy state,
-or enable TUN.
+Horion contains no advertising, analytics, or telemetry. An official core
+install contacts GitHub's release infrastructure. Adding or updating a
+subscription contacts the hostname shown in that profile; delay tests ask the
+selected Mihomo proxy to reach a fixed public HTTPS 204 endpoint. These services
+necessarily receive ordinary connection metadata. Horion does not modify the
+Windows system proxy or enable TUN.
 
 ## Future security requirements
 
-Subscriptions, profiles, Controller metrics, system proxy, TUN, privileged
-helpers, and update delivery are outside the current implementation. Adding any
-of them requires a separate threat review, narrow Rust command interfaces,
-strict input and path validation, secret storage decisions, rollback behavior,
-and tests that demonstrate the resulting system/network state.
+Controller traffic metrics, system proxy, TUN, privileged helpers, tray
+controls, and update delivery remain outside the current implementation. Adding
+any of them requires a separate threat review, narrow Rust command interfaces,
+strict validation, rollback behavior, and tests that demonstrate the resulting
+system and network state.

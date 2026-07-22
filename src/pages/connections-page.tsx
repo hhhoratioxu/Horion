@@ -1,7 +1,6 @@
 import { Search, XCircle } from "lucide-react";
 
 import { Button } from "../components/ui/button";
-import { FeatureBadge } from "../components/ui/feature-badge";
 import { PageHeading } from "../components/ui/page-heading";
 import { PageState } from "../components/ui/page-state";
 
@@ -9,7 +8,6 @@ export function ConnectionsPage() {
   return (
     <div className="space-y-5">
       <PageHeading
-        action={<FeatureBadge phase={4} />}
         description="通过 Mihomo Controller API 查看和管理实时连接。"
         eyebrow="Connections"
         title="连接"
@@ -25,9 +23,9 @@ export function ConnectionsPage() {
         </Button>
       </div>
       <PageState
-        description="当前没有连接数据源。缺失的进程名、目标地址等字段会在接入时按可空类型安全处理。"
+        description="连接数据接口尚未接入。接入后将只展示 Controller 返回的真实连接，缺失字段保持为空。"
         kind="offline"
-        title="Controller 尚未连接"
+        title="实时连接尚未接入"
       />
     </div>
   );

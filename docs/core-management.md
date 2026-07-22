@@ -1,153 +1,215 @@
-# Mihomo 内核管理
+# Mihomo 内核、配置与节点管理
 
-本文说明 Horion v0.2.0 已经实现的真实内核管理流程及其安全边界。
+本文说明 Horion v0.3.0 已实现的真实行为和安全边界。
 
-## 先理解“运行中”的含义
+## “运行中”不等于“系统已经代理”
 
-Horion 当前使用最小 direct 模式配置启动 Mihomo，只建立供自身健康检查使用的本机
-Controller。它不会载入订阅或节点，不会开放代理监听端口，不会修改 Windows 系统代理，
-也不会启用 TUN。
+- `running`：Horion 持有的 Mihomo 子进程仍存活。
+- `healthy`：Rust 使用私有随机 secret 访问 `GET /version` 成功，且版本与安装清单一致。
+- 节点和策略组页面可用：健康 Controller 已返回当前运行时数据。
 
-因此：
+以上状态都不表示 Windows 系统代理已打开。v0.3.0 尚未修改系统代理，也不会启用 TUN。浏览器或其他程序只有在自行指向 active 配置提供的本地 HTTP/SOCKS/mixed 端口后，才可能使用该代理。
 
-- `running` 表示 Mihomo 子进程仍然存活；
-- `healthy` 表示 Horion 已使用随机 secret 认证访问 `GET /version`，且版本与安装清单一致；
-- 以上两项都不表示浏览器或 Windows 流量正在通过代理。
+## 1. 安装 Mihomo
 
-## 安装官方内核
+### 安装固定官方版本
 
-在“首页”或“设置 → Mihomo 内核”中选择安装经过校验的官方版本。只有这次明确操作会触发
-网络下载；启动应用、查看状态和打开日志页面都不会自动下载。
+在首页或“设置 → Mihomo 内核”点击安装。只有这次明确操作会触发下载；打开 Horion、查看状态或管理配置不会自动下载内核。
 
-v0.2.0 固定到 Mihomo `v1.19.29`：
+v0.3.0 固定使用 Mihomo `v1.19.29`，不访问 `latest`：
 
-| 架构 | 下载资产 | 压缩包大小 | SHA-256 | ZIP 中唯一允许的文件 | 解压大小 |
-| --- | --- | ---: | --- | --- | ---: |
-| Windows x86_64 | `mihomo-windows-amd64-v1-v1.19.29.zip` | 17,509,589 | `4a5b4cdf76f1879043cea7488162517fd3fb95d5b7a205d89601f1942791ee39` | `mihomo-windows-amd64-v1.exe` | 47,484,928 |
-| Windows ARM64 | `mihomo-windows-arm64-v1.19.29.zip` | 15,430,938 | `f71736f9c2a17abb8909a726c69ac55279d0cb43d1d9f2c85afdbb70a0f326a3` | `mihomo-windows-arm64.exe` | 42,606,080 |
+| 架构 | 资产 | ZIP 大小 | SHA-256 |
+| --- | --- | ---: | --- |
+| Windows x86_64 | `mihomo-windows-amd64-v1-v1.19.29.zip` | 17,509,589 | `4a5b4cdf76f1879043cea7488162517fd3fb95d5b7a205d89601f1942791ee39` |
+| Windows ARM64 | `mihomo-windows-arm64-v1.19.29.zip` | 15,430,938 | `f71736f9c2a17abb8909a726c69ac55279d0cb43d1d9f2c85afdbb70a0f326a3` |
 
-Horion 不查询 `latest`。Rust 后端只接受 HTTPS，并将重定向目标限制在预设的 GitHub 发行
-资产主机中。下载有连接、请求、总时长和最大字节数限制。之后按顺序验证：
+后端验证 HTTPS 重定向目标、响应长度、实际字节数、SHA-256、唯一 ZIP 条目、条目路径和解压大小。解压后隐藏窗口执行 `mihomo.exe -v`，只在输出严格符合 Mihomo 版本格式且报告 `1.19.29` 时提交安装。
 
-1. 服务端报告的长度（若提供）与固定长度一致；
-2. 实际下载的总字节数一致；
-3. 流式计算的 SHA-256 一致；
-4. ZIP 恰好只有一个条目，名称、封闭路径、文件类型和解压大小都一致；
-5. 提取后的程序在 10 秒内成功执行 `-v`；
-6. 输出包含可解析的 `Mihomo Meta vX.Y.Z`，且官方资产报告 `1.19.29`。
+### 导入本地内核
 
-任一检查失败都会中止安装，临时目录不会成为当前版本。通过后，可执行文件、Mihomo
-GPL-3.0 许可证和上游 notice 一并提交到受管版本目录。
+输入可信 `mihomo.exe` 的完整绝对路径。Horion 会要求它是普通、非空、不超过 200 MiB 的 `.exe` 文件，将其复制到临时受管目录，计算 SHA-256，再实际执行副本的 `-v`。
 
-## 导入本机内核
+`-v` 输出检查不是数字签名或来源证明。不要导入未知程序；不确定时使用固定官方安装。
 
-在“设置 → Mihomo 内核”中输入本机 `mihomo.exe` 的完整绝对路径并选择导入。后端会：
+## 2. 添加配置
 
-1. 规范化路径，并要求它是普通、非空且不超过 200 MiB 的 `.exe` 文件；
-2. 将文件复制到 Horion 的临时管理目录，同时计算 SHA-256；
-3. 隐藏窗口执行副本的 `-v`，最多等待 10 秒；
-4. 只在输出符合 `Mihomo Meta vX.Y.Z` 时提交受管副本和清单。
+配置管理要求先安装 Mihomo，因为所有配置在提交前都要经过真实的 `mihomo.exe -t` 预检。
 
-导入不会对原文件进行长期引用，后续启动的是 Horion 管理的副本。但是，`-v` 验证本身
-会执行导入文件。输出格式检查不能代替数字签名，也不能证明文件没有恶意代码。只导入
-来源可信的 Mihomo 程序；不确定时优先使用固定官方安装。
+### 导入本地 YAML
 
-## 启动、停止与重启
+本地路径必须：
 
-安装完成且状态为 `stopped` 后，可以在首页启动内核。Horion 启动流程为：
+- 是完整绝对路径；
+- 不含 `.` 或 `..` 路径穿越组件；
+- 指向普通非符号链接文件；
+- 使用 `.yaml` 或 `.yml`；
+- 非空且不超过 8 MiB。
 
-1. 重新读取安装清单，规范化受管路径并核对 `mihomo.exe` 的 SHA-256；
-2. 在 IPv4 loopback `127.0.0.1` 上取得并暂时保留一个随机可用 Controller 端口；
-3. 使用系统随机源生成 32 字节随机 secret，每次启动均不同；
-4. 在 Rust 内存中构建最小 direct 模式配置；
-5. 以受管目录作为工作目录，通过 stdin 把配置交给 `mihomo.exe -t` 预检，最多等待
-   10 秒；
-6. 预检通过后释放端口预留，并立即使用同一份内存配置启动受管的正式子进程，secret
-   不落入配置文件；
-7. 捕获预检及正式进程的 stdout 与 stderr；
-8. 最多等待 15 秒，使用 `Bearer` secret 访问 `GET /version`；
-9. 仅当响应成功且版本与清单一致时进入 `running`。
+Horion 把内容复制到应用数据目录，但保留规范化的原路径，以支持日后对该配置执行单独“更新”。前端只显示原文件名，不显示完整本地路径。
 
-健康检查客户端不使用系统代理。Controller 不绑定局域网地址，secret 不返回前端。
+### 添加 HTTPS 订阅
 
-“停止”只终止 Horion 当前持有的子进程句柄并等待回收，不会按进程名全局结束其他 Mihomo
-实例。“重启”是在同一串行操作锁下先停止、再重新生成端口和 secret 并启动。关闭 Horion
-时也会清理它持有的子进程。进程意外退出会进入 `crashed` 并记录原因。
+订阅 URL 仅允许 HTTPS，禁止 `user:password@host` 和 fragment，最大 2,048 字节。重定向仍必须是无 userinfo 的 HTTPS，最多 8 次。响应和实际读取均限制为 8 MiB；请求失败最多额外重试两次。
 
-## 状态说明
+完整 URL 不会写入 `profiles.json` 或返回前端，而是存入当前 Windows 用户的 Credential Manager：
+
+```text
+Target: Horion/Profile/<profile-uuid>
+```
+
+磁盘清单只包含 credential key、host 显示标签和可选 User-Agent。自定义 User-Agent 必须是 1–256 个可打印 ASCII 字节。删除订阅或复制订阅时，Horion 同步删除或创建对应的独立凭据。
+
+如果响应包含 `subscription-userinfo`，界面可以显示 upload、download、total 和 expire；缺失或格式错误的字段保持为空。
+
+## 3. 更新、编辑和历史
+
+- “更新全部”只更新 subscription，不会重新读取 local 配置。
+- 对单个 local 配置执行“更新”时，才重新读取其原绝对路径。
+- 下载、读取、YAML 解析或 Mihomo 预检失败时，旧内容和旧 revision 保持可用。
+- 编辑器读取 `{ id, content, revision }`，保存时发送 `expectedRevision`。
+- revision 已变化时返回冲突，Horion 不覆盖较新的内容；前端保留本地编辑文本供用户处理。
+
+更新或保存前，Horion 将旧内容备份到该 profile 的历史目录。每个 profile 最多保留最近 10 份。内容与 `profiles.json` 都采用原子替换写入；只有完整提交后 revision 才增加。
+
+active profile 更新或保存后：
+
+- 内核正在运行：自动停止并使用新 revision 启动；
+- 内核原本停止：继续保持停止；
+- 新 revision 启动失败：恢复旧内容、旧 revision 和 active 元数据，并尽力重新启动旧配置。
+
+active profile 不能直接删除。请先激活另一个配置。
+
+删除其他配置使用可恢复事务：内容和历史先移入受管隔离区，清单提交成功后才视为删除完成；若应用中途退出，下次启动会恢复未提交删除或继续清理已提交删除。
+
+## 4. 激活配置
+
+点击激活后，Rust 后端会：
+
+1. 验证 profile UUID、受管路径、8 MiB 上限和 YAML 顶层 mapping；
+2. 对安全净化后的最终内容执行 Mihomo `-t -f -`；
+3. 记录旧 active profile；
+4. 若内核正在运行，停止 Horion 持有的精确子进程；
+5. 原子切换 active ID；
+6. 若此前运行，启动新配置并等待 Controller 健康；
+7. 失败时恢复旧 active ID，并尽力恢复旧运行配置。
+
+激活不会自动打开系统代理或 TUN。
+
+## 5. 安全运行时配置
+
+用户 YAML 不会原样交给 Mihomo。Horion 先展开 YAML merge key，然后执行以下净化：
+
+- 强制 `allow-lan: false` 和 `bind-address: 127.0.0.1`；
+- 覆盖为随机 loopback Controller 和每次启动新生成的 secret；
+- 强制 Controller CORS origins 为空，禁止 private-network；
+- 删除额外 Controller TLS/unix/pipe、routing mark、外部 UI、认证跳过及外部 DoH 入口；
+- 删除 `tun`、额外 listeners/tunnels、TUIC server、iptables、Shadowsocks/VMess server 配置、redir/tproxy 端口；
+- 删除 `dns.listen`。
+
+普通 `port`、`socks-port` 和 `mixed-port` 可以保留，但只能在 loopback 上使用。没有 active profile 时，Horion 使用不开放本地代理端口的最小 `DIRECT` 配置。
+
+预检和正式启动均通过 stdin 传递同一份配置。Horion 还会从 Mihomo 子进程环境中移除配置覆盖、Controller 覆盖、secret 覆盖、post-up/post-down hook 和 `SAFE_PATHS` 等 `CLASH_*` 环境变量，防止父环境绕过净化。
+
+## 6. 启动、停止与状态
+
+启动流程：
+
+1. 重新校验安装清单、受管路径和 `mihomo.exe` SHA-256；
+2. 读取 active profile，或在没有 active profile 时构造安全 `DIRECT` 配置；
+3. 申请并暂时保留随机 IPv4 loopback Controller 端口；
+4. 生成 32 字节随机 secret；
+5. 使用 stdin 执行 `-t -d <runtime> -f -`，最多等待 10 秒；
+6. 使用同一份配置启动正式子进程；
+7. 最多等待 15 秒，通过带 `Bearer` secret 的 `GET /version` 健康检查；
+8. 只有版本与安装清单一致时进入 `running`。
 
 | 状态 | 含义 |
 | --- | --- |
-| `not_installed` | 没有可用的受管内核清单 |
-| `downloading` | 正在下载固定官方 ZIP |
-| `installing` | 正在校验、导入或提交文件 |
-| `stopped` | 内核已安装，但没有受管子进程 |
-| `starting` | 正在执行配置预检、创建正式子进程或等待 Controller 健康检查 |
-| `running` | 子进程存活，最近的版本健康检查通过 |
-| `stopping` | 正在终止并回收准确子进程 |
+| `not_installed` | 没有可用的受管内核 |
+| `downloading` | 正在下载固定官方资产 |
+| `installing` | 正在校验、导入或提交 |
+| `stopped` | 已安装但没有受管子进程 |
+| `starting` | 正在预检、启动或等待健康 |
+| `running` | 子进程存活且最近健康检查通过 |
+| `stopping` | 正在停止并回收精确子进程 |
 | `crashed` | 受管子进程意外退出 |
-| `error` | 下载、完整性、进程或状态转换发生错误 |
+| `error` | 安装、配置、进程或状态转换失败 |
 
-状态栏中的“系统代理”和“TUN”在 v0.2.0 始终代表未接入能力，不随内核运行状态改变。
+停止操作只使用 Horion 持有的 `Child` 句柄，不会按进程名称结束其他 Mihomo。关闭 Horion 时执行同一清理流程。
 
-## 日志
+## 7. 节点、策略组和模式
 
-“日志”页面展示 Rust 后端捕获的生命周期事件、stdout 和 stderr。可按级别、输出流或消息
-搜索，也可以手动刷新；可见窗口中会周期性刷新。
+内核运行且 Controller 健康后，节点页会显示当前模式、策略组、节点成员、当前选择、存活状态和已知延迟。节点 server/port 仅从 active YAML 中的 `proxies` 安全元数据补充；密码、token、UUID、证书和订阅 URL 不会返回界面。
 
-- 日志只保存在当前 Horion 进程的内存中，不写入持久日志文件；
-- 队列最多保存最近 1,000 条；
-- 单行最多保留 16 KiB，超出部分标为截断；
-- 当前 Controller secret 在写入日志队列前会替换为 `[REDACTED]`。
+支持的操作：
 
-脱敏只针对 Horion 生成的 Controller secret。不要在未来的代理配置或测试输出中主动打印
-订阅凭据等其他敏感数据。
+- 在策略组允许的成员中选择节点；
+- 对已知非内置节点执行单次延迟测试；测试地址固定为 `https://www.gstatic.com/generate_204` 并要求 HTTP 204，超时参数限制为 1–30 秒；
+- 最多 4 个前端并发任务执行“全部测速”，取消时停止尚未开始的队列；
+- 在 `rule`、`global`、`direct` 三种 Mihomo 模式间切换。
 
-## 文件位置
+模式切换只修改当前 Mihomo 运行会话，不改写 active YAML；内核重启或重新激活配置后，模式会回到该配置声明的值。
 
-Tauri 负责解析应用数据根目录。常规 Windows 环境通常为：
+所有操作都由 Rust 使用私有 Controller address/secret 发起。前端无法指定 Controller URL、测速 URL 或 secret，也不能把任意 API 路径转发给 Mihomo。每次用户操作都会重新确认当前进程及 Controller 健康；选择节点还会重新读取快照，验证节点仍属于该组。内核停止、Controller 不健康、组/节点不存在、节点不属于该组或模式非法都会被后端拒绝；测速超时会被收敛到安全范围。
+
+测速只是按需 Controller 请求，不是实时流量监控。
+
+## 8. 日志与脱敏
+
+- 日志只保存在当前 Horion 进程内；
+- 队列最多 1,000 条；
+- 单行最多 16 KiB；
+- Controller secret 替换为 `[REDACTED]`；
+- `http://` 和 `https://` 完整值在写入日志或错误状态前替换；
+- 订阅错误只报告 host 和安全原因。
+
+## 9. 数据位置
+
+Windows 常见路径：
 
 ```text
-%APPDATA%\io.horion.desktop\core\
-├── current.json
-├── versions\
-│   └── <version>-<sha256-prefix>\
-│       ├── mihomo.exe
-│       ├── LICENSE.mihomo.txt
-│       └── NOTICE.mihomo.md
-└── runtime\
+%APPDATA%\io.horion.desktop\
+├─ core\
+│  ├─ current.json
+│  ├─ versions\...
+│  └─ runtime\
+└─ profiles\
+   ├─ profiles.json
+   ├─ items\<uuid>.yaml
+   └─ history\<uuid>\...
 ```
 
-Horion 在启动应用和每次启动内核前都会重新检查 `current.json` 的相对路径边界及可执行
-文件 SHA-256。如果受管文件被替换或清单试图跳出管理目录，状态会进入错误而不是执行该
-文件。
+不要在 Horion 运行时手工修改这些文件。删除应用数据前先停止内核并退出 Horion。Credential Manager 中的订阅 URL 不位于该目录，卸载或手动删目录不等同于删除所有 credential target。
 
-删除这些文件前先停止内核并退出 Horion。手工修改 `current.json` 不受支持。
+## 10. 当前未接入
 
-## 单实例行为
+- Windows 系统代理与绕过列表；
+- TUN、路由和管理员权限流程；
+- 连接列表及关闭连接；
+- 实时上传/下载速率、累计流量和图表；
+- 规则/provider/DNS 图形化管理；
+- 后台定时更新订阅。
 
-Horion 使用单实例插件。重复启动应用不会创建第二套界面和第二个内核管理器，而是尝试
-显示并聚焦现有主窗口。这不意味着 Horion 会接管由其他程序启动的 Mihomo；它只管理自己
-创建且持有句柄的子进程。
+因此“节点可见且内核运行”仍不代表应用流量已自动接管。
 
 ## 常见问题
 
-### 安装失败并提示大小或哈希不一致
+### 添加配置提示“内核未安装”
 
-Horion 会拒绝该文件，不应通过关闭校验来绕过。确认网络未返回登录页或拦截页；如果上游
-正式发布了新版本，需要代码审查后更新固定资产，而不是切换到 `latest`。
+先安装或导入 Mihomo。Horion 使用真实的已安装内核进行 `-t` 校验，不会只做宽松的 YAML 语法检查。
 
-### 导入后提示不是 Mihomo
+### 订阅更新失败但旧节点仍在
 
-确认选择的是 Windows Mihomo 可执行文件，而不是 ZIP、启动器或其他同名程序。该文件必须
-能在 10 秒内成功完成 `mihomo.exe -v` 并输出预期版本格式。
+这是预期的保守行为。失败不会覆盖旧内容；配置状态会显示 `error` 和脱敏原因。修复网络或订阅后再次更新。
 
-### 启动后健康检查超时
+### 保存时提示 revision 冲突
 
-查看“日志”页面中的 stderr 和生命周期消息。本机安全软件可能阻止子进程或 loopback
-访问。Horion 会停止未能在 15 秒内通过健康检查的子进程，不会把它标为运行中。
+配置在编辑期间已被更新或由另一操作保存。保留当前编辑文本，重新读取最新 revision，人工合并后再保存。
 
-### 内核运行了，为什么仍然无法代理？
+### 节点页面不可用
 
-这是 v0.2.0 的预期行为。订阅、节点、代理端口、系统代理和 TUN 尚未接入。本版本只验证
-安装、进程生命周期和受认证的本机 Controller 健康检查。
+确认已激活包含节点的配置，并且内核状态为 `running`、`healthy`。节点命令不会在内核停止时读取 YAML 伪造在线状态。
+
+### 内核运行但浏览器没有代理
+
+v0.3.0 不修改 Windows 系统代理，也不启用 TUN。需要手工把应用指向配置中的本地代理端口；否则流量不会进入 Mihomo。
