@@ -2,6 +2,8 @@ import { ChevronLeft, ChevronRight, Orbit } from "lucide-react";
 import { NavLink, useLocation } from "react-router-dom";
 
 import { navigationItems } from "../../app/route-meta";
+import { coreStatePresentation } from "../../core/core-status";
+import { useCoreStore } from "../../stores/core-store";
 import { useLayoutStore } from "../../stores/layout-store";
 import { cn } from "../../utils/cn";
 import { Button } from "../ui/button";
@@ -10,6 +12,8 @@ export function Sidebar() {
   const location = useLocation();
   const sidebarCollapsed = useLayoutStore((state) => state.sidebarCollapsed);
   const toggleSidebar = useLayoutStore((state) => state.toggleSidebar);
+  const snapshot = useCoreStore((state) => state.snapshot);
+  const corePresentation = coreStatePresentation[snapshot.state];
 
   return (
     <aside
@@ -89,11 +93,16 @@ export function Sidebar() {
           )}
         >
           <div className="flex items-center gap-2 text-xs font-semibold text-text">
-            <span className="size-1.5 rounded-full bg-text-subtle" />
-            阶段 1
+            <span
+              className={cn(
+                "size-1.5 rounded-full",
+                snapshot.state === "running" ? "bg-positive" : "bg-text-subtle",
+              )}
+            />
+            内核：{corePresentation.label}
           </div>
           <p className="mt-1.5 text-[11px] leading-4 text-text-subtle">
-            桌面壳层已就绪，内核能力尚未接入。
+            {snapshot.version ? `Mihomo ${snapshot.version}` : "可在首页安装或管理内核。"}
           </p>
         </div>
         <Button

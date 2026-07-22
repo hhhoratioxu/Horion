@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router-dom";
 
 import { router } from "./app/router";
+import { CoreProvider } from "./components/core/core-provider";
 import { ThemeController } from "./components/theme/theme-controller";
 import "./styles/index.css";
 
@@ -14,7 +15,9 @@ if (!root) {
 
 createRoot(root).render(
   <StrictMode>
-    <ThemeController />
-    <RouterProvider router={router} />
+    <CoreProvider>
+      <ThemeController />
+      <RouterProvider router={router} />
+    </CoreProvider>
   </StrictMode>,
 );

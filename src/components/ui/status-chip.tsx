@@ -38,6 +38,7 @@ export function StatusChip({ label, tone = "neutral", value }: StatusChipProps) 
         toneClasses[tone],
       )}
       title={`${label}：${value}`}
+      role="status"
     >
       <Icon aria-hidden="true" size={13} strokeWidth={2.2} />
       <span className="text-[11px] text-text-subtle">{label}</span>
