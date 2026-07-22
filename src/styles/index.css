@@ -1,0 +1,156 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+
+  --color-canvas: var(--canvas);
+  --color-sidebar: var(--sidebar);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-hover: var(--surface-hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-subtle: var(--text-subtle);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-contrast: var(--accent-contrast);
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-negative: var(--negative);
+  --color-negative-soft: var(--negative-soft);
+  --color-focus: var(--focus);
+
+  --shadow-card: var(--card-shadow);
+}
+
+:root {
+  color-scheme: light;
+  --canvas: #f4f6f9;
+  --sidebar: #eef1f5;
+  --surface: #ffffff;
+  --surface-raised: #f7f9fb;
+  --surface-hover: #edf1f5;
+  --line: #dce2e9;
+  --line-strong: #c6d0dc;
+  --text: #18212c;
+  --text-muted: #5d6b7b;
+  --text-subtle: #8793a2;
+  --accent: #238f86;
+  --accent-strong: #1c7d75;
+  --accent-soft: rgba(35, 143, 134, 0.11);
+  --accent-contrast: #ffffff;
+  --positive: #16815e;
+  --positive-soft: rgba(22, 129, 94, 0.1);
+  --warning: #a66313;
+  --warning-soft: rgba(166, 99, 19, 0.1);
+  --negative: #c23e58;
+  --negative-soft: rgba(194, 62, 88, 0.1);
+  --focus: rgba(35, 143, 134, 0.48);
+  --card-shadow: 0 8px 28px rgba(24, 33, 44, 0.055);
+}
+
+:root.dark {
+  color-scheme: dark;
+  --canvas: #0b0f14;
+  --sidebar: #0d1219;
+  --surface: #121821;
+  --surface-raised: #161e29;
+  --surface-hover: #1a2430;
+  --line: #253142;
+  --line-strong: #34445a;
+  --text: #edf3f8;
+  --text-muted: #9baaba;
+  --text-subtle: #6f8093;
+  --accent: #58d3c5;
+  --accent-strong: #70ded2;
+  --accent-soft: rgba(88, 211, 197, 0.1);
+  --accent-contrast: #07110f;
+  --positive: #67d6a3;
+  --positive-soft: rgba(103, 214, 163, 0.1);
+  --warning: #edb864;
+  --warning-soft: rgba(237, 184, 100, 0.1);
+  --negative: #f18498;
+  --negative-soft: rgba(241, 132, 152, 0.1);
+  --focus: rgba(88, 211, 197, 0.55);
+  --card-shadow: 0 12px 36px rgba(0, 0, 0, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  min-width: 960px;
+}
+
+html {
+  background: var(--canvas);
+  font-family: var(--font-sans);
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--canvas);
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  font: inherit;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+* {
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--line-strong);
+  background-clip: padding-box;
+}
+
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

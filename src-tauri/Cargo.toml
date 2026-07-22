@@ -1,0 +1,31 @@
+[package]
+name = "horion"
+version = "0.1.0"
+description = "Horion desktop application shell"
+authors = ["Horion Contributors"]
+edition = "2021"
+license = "MIT"
+rust-version = "1.85"
+
+[lib]
+name = "horion_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "horion"
+path = "src/main.rs"
+test = false
+bench = false
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.5", features = [] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

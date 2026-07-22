@@ -1,0 +1,29 @@
+# Dependencies and frontend output
+node_modules/
+dist/
+coverage/
+
+# Rust and Tauri output
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+*.swp
+*.swo
+
+# Platform files
+.DS_Store
+Thumbs.db
+
+# Runtime data must never enter source control
+data/
+logs/
+*.log
+*.pid

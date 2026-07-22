@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta
+      name="description"
+      content="Horion — 安全、现代的 Mihomo 桌面控制端"
+    />
+    <title>Horion</title>
+    <script>
+      (() => {
+        const stored = localStorage.getItem("horion.ui.theme");
+        let preference = "dark";
+
+        if (stored) {
+          try {
+            preference = JSON.parse(stored).state.preference ?? "dark";
+          } catch {
+            preference = "dark";
+          }
+        }
+
+        const dark =
+          preference === "dark" ||
+          (preference === "system" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
