@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { RouterProvider } from "react-router-dom";
 import { beforeEach, describe, expect, it } from "vitest";
 
+import { emptyCoreSnapshot, useCoreStore } from "../stores/core-store";
 import { useLayoutStore } from "../stores/layout-store";
 import { router } from "./router";
 
@@ -9,10 +10,22 @@ describe("application router", () => {
   beforeEach(async () => {
     localStorage.clear();
     useLayoutStore.setState({ sidebarCollapsed: false });
+    useCoreStore.setState({
+      snapshot: emptyCoreSnapshot,
+      logs: [],
+      runtimeAvailable: false,
+      initialized: true,
+      isRefreshingStatus: false,
+      isRefreshingLogs: false,
+      pendingAction: null,
+      statusError: null,
+      logsError: null,
+      actionError: null,
+    });
     await router.navigate("/");
   });
 
-  it("renders the phase-one dashboard and primary navigation", () => {
+  it("renders the core dashboard and primary navigation", () => {
     render(<RouterProvider router={router} />);
 
     expect(screen.getByRole("heading", { name: "运行概览" })).toBeInTheDocument();
@@ -23,10 +36,12 @@ describe("application router", () => {
     );
   });
 
-  it("keeps unavailable runtime actions disabled", () => {
+  it("keeps desktop and future network actions disabled in browser tests", () => {
     render(<RouterProvider router={router} />);
 
-    expect(screen.getByRole("button", { name: "启动内核" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "开启系统代理" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "安装已验证版本 v1.19.29" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "系统代理未接入" })).toBeDisabled();
   });
 });
