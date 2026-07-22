@@ -1,4 +1,6 @@
+mod controller;
 mod core;
+mod profile;
 
 use tauri::Manager;
 
@@ -16,10 +18,16 @@ pub fn run() -> tauri::Result<()> {
         ))
         .setup(|app| {
             let app_data = app.path().app_data_dir()?;
-            app.manage(core::CoreService::new(app_data)?);
+            let core = core::CoreService::new(app_data)?;
+            app.manage(core.profiles());
+            app.manage(core);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            controller::proxy_get_overview,
+            controller::proxy_select,
+            controller::proxy_test_delay,
+            controller::proxy_set_mode,
             core::core_get_status,
             core::core_install_official,
             core::core_import_from_path,
@@ -27,6 +35,17 @@ pub fn run() -> tauri::Result<()> {
             core::core_stop,
             core::core_restart,
             core::core_get_logs,
+            profile::profile_list,
+            profile::profile_import_local,
+            profile::profile_add_subscription,
+            profile::profile_update,
+            profile::profile_update_all,
+            profile::profile_rename,
+            profile::profile_duplicate,
+            profile::profile_delete,
+            profile::profile_get_content,
+            profile::profile_save_content,
+            profile::profile_activate,
         ])
         .build(tauri::generate_context!())?;
 

@@ -4,95 +4,100 @@ Horion is a security-first Windows desktop control plane for the
 [Mihomo](https://github.com/MetaCubeX/mihomo) proxy core. It is built with
 Tauri 2, Rust, React, TypeScript, Vite, and Tailwind CSS.
 
-> Current version: **v0.2.0 — real core lifecycle integration**. Horion can
-> install or import Mihomo and can start, stop, restart, health-check, and show
-> logs for that process. Profiles, subscriptions, proxy nodes, system proxy,
-> TUN, and Controller metrics are not connected yet. **A running core does not
-> mean Windows traffic is being proxied.**
+> Current version: **v0.3.0 — profiles, subscriptions, and proxy nodes**.
+> Horion can manage Mihomo, import local YAML, update HTTPS subscriptions,
+> switch policy groups, select nodes, run delay tests, and change the current
+> proxy mode. **System proxy and TUN are not connected yet, so a running core
+> does not automatically route Windows traffic.**
 
-## What v0.2.0 implements
+## What v0.3.0 implements
 
-- Explicit, user-triggered download of a pinned official Mihomo release
-- Local Mihomo executable import, copied into Horion's managed data directory
-- Install-time file-size, SHA-256, ZIP-entry, and `mihomo -v` validation
-- Start, stop, and restart of the exact child process owned by Horion
-- A loopback-only Controller on a random port with a fresh random secret
-- Authenticated `GET /version` health checks and version matching
-- Bounded in-memory capture of stdout, stderr, and lifecycle logs
-- Core lifecycle states and actionable errors in the desktop UI
-- Single-instance behavior that focuses the existing window
-- Dark, light, and system themes with responsive desktop navigation
+- Pinned official Mihomo installation or trusted local executable import
+- Exact child-process start, stop, restart, health checks, cleanup, and bounded logs
+- Local `.yaml` / `.yml` import by absolute path or desktop drag-and-drop
+- HTTPS subscriptions whose complete URLs are stored only in Windows Credential Manager
+- Rename, duplicate, delete, and revision-protected YAML editing
+- Atomic writes and up to ten backups per managed profile
+- Real `mihomo -t` validation before activation, with content and runtime rollback
+- Real Controller nodes and policy groups with search, protocol filters, delay sorting,
+  and at most four concurrent single-node tests
+- Selector changes and rule/global/direct runtime mode switching
+- A redesigned light/dark desktop UI with explicit loading, empty, offline, and error states
+
+## Quick start
+
+1. Download the latest `Horion_*_x64-setup.exe` from
+   [GitHub Releases](https://github.com/hhhoratioxu/Horion/releases).
+2. Install the verified official Mihomo core from the dashboard.
+3. Import a local YAML profile or add a trusted HTTPS subscription.
+4. Activate the profile and start the core.
+5. Test nodes and choose a policy-group target from the Proxies pages.
+
+This personal project is not Authenticode-signed, so Windows SmartScreen may
+warn on first launch. Download only from this repository and compare the
+installer SHA-256 with the value on the Release page.
 
 ## Deliberate limitations
 
-v0.2.0 starts Mihomo with a minimal direct-mode runtime configuration. It does
-not install a profile, expose a local proxy listener, configure Windows proxy
-settings, or enable TUN. The following features remain unimplemented:
+v0.3.0 can use local HTTP, SOCKS, and Mixed ports from the active profile, but
+forces those listeners to loopback. It does not yet provide:
 
-- Subscription and profile management
-- Proxy-node and policy-group selection
-- System proxy and TUN control
-- Controller traffic, connection, and rule metrics
-- Tray controls and application/core update workflows
+- Windows system-proxy changes
+- TUN, custom inbound servers, or LAN sharing
+- Live traffic, connection, rule, or memory metrics
+- Tray controls or automatic app/core updates
 
-The UI labels these areas as not connected or under development. Horion does
-not claim protocol support independently of the installed Mihomo executable.
+Before execution, Horion removes TUN, custom listeners/tunnels, DNS listeners,
+TUIC/SS/VMess server settings, external Controllers, Web UI, and user CORS
+settings from managed profiles. They cannot override Horion's authenticated
+loopback Controller.
 
 ## Pinned official core
 
-Horion v0.2.0 never resolves a mutable `latest` release. An official install
-uses Mihomo `v1.19.29` and chooses one of the following assets at compile time:
+Horion v0.3.0 never resolves a mutable `latest` release. Official installation
+uses Mihomo `v1.19.29`:
 
 | Architecture | Official asset | Archive bytes | SHA-256 |
 | --- | --- | ---: | --- |
 | Windows x86_64 | `mihomo-windows-amd64-v1-v1.19.29.zip` | 17,509,589 | `4a5b4cdf76f1879043cea7488162517fd3fb95d5b7a205d89601f1942791ee39` |
 | Windows ARM64 | `mihomo-windows-arm64-v1.19.29.zip` | 15,430,938 | `f71736f9c2a17abb8909a726c69ac55279d0cb43d1d9f2c85afdbb70a0f326a3` |
 
-No network request is made merely by opening Horion. The official archive is
-downloaded only after the user selects **Install official core**. Horion checks
-the exact downloaded size and SHA-256, requires one allowlisted ZIP entry with
-the pinned uncompressed size, and runs the extracted executable with `-v`
-before committing it to the managed core directory.
-
-See [`docs/core-management.md`](docs/core-management.md) for the complete trust
-and lifecycle model. Mihomo is a separate GPL-3.0 third-party project and is not
-embedded in the Horion installer; see
+The network request happens only after the user selects the official-install
+action. Horion verifies exact size, SHA-256, the allowlisted ZIP entry, and
+`mihomo -v` before committing the executable. Mihomo remains a separate
+GPL-3.0 project and is not embedded in the Horion installer; see
 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
-## Requirements
-
-- Windows 10 or Windows 11
-- Microsoft Edge WebView2 Runtime
-- For source development: Node.js 24 LTS, Rust stable (MSVC host), and Microsoft
-  C++ Build Tools with the Desktop development with C++ workload
-
 ## Run from source
+
+Requirements are Windows 10/11, WebView2, Node.js 24 LTS, Rust stable with the
+MSVC host, and Microsoft C++ Build Tools with Desktop development with C++.
 
 ```powershell
 npm.cmd install
 npm.cmd run tauri:dev
 ```
 
-Using `npm.cmd` avoids PowerShell execution-policy conflicts. Frontend-only
-development is available with `npm.cmd run dev`, but core commands require the
-Tauri desktop runtime. Build and test instructions, including the opt-in live
-Mihomo test, are in [`docs/development.md`](docs/development.md).
+`npm.cmd run dev` is a browser-only preview and cannot access the local core,
+profiles, or Controller. See [`docs/development.md`](docs/development.md) for
+the full verification and release flow.
 
 ## Data and privacy
 
-Managed core files are stored below Tauri's application data directory. On a
-normal Windows installation this is `%APPDATA%\io.horion.desktop\core\`. The
-Controller secret is generated for each start, sent to Mihomo through stdin,
-kept out of frontend state, and redacted from captured process output.
+A normal Windows installation stores data below `%APPDATA%\io.horion.desktop\`:
 
-Horion contains no advertising, analytics, or telemetry. An official core
-install necessarily contacts GitHub's release infrastructure, and a locally
-imported executable is executed with `-v` during validation. Import only a
-Mihomo executable you trust. See [`SECURITY.md`](SECURITY.md) for details.
+- `core\` contains the managed Mihomo executable and runtime data.
+- `profiles\` contains managed YAML, metadata, and up to ten backups.
+- Windows Credential Manager stores complete subscription URLs, which may contain tokens.
+
+Each start receives a fresh Controller secret that stays in Rust and is sent to
+Mihomo through stdin. Complete subscription URLs, profile content, and the
+secret are not put in browser localStorage or ordinary UI logs. Horion contains
+no advertising, analytics, or telemetry. See [`SECURITY.md`](SECURITY.md).
 
 ## License
 
 Horion is licensed under the MIT License. Third-party components retain their
-own licenses. Mihomo `v1.19.29` is managed as a separate process under
-GPL-3.0; its pinned source and license are recorded in
+own licenses. Mihomo `v1.19.29` runs as a separate GPL-3.0 process; its pinned
+source and license are recorded in
 [`third_party/mihomo/NOTICE.md`](third_party/mihomo/NOTICE.md).

@@ -39,9 +39,7 @@ describe("application router", () => {
   it("keeps desktop and future network actions disabled in browser tests", () => {
     render(<RouterProvider router={router} />);
 
-    expect(
-      screen.getByRole("button", { name: "安装已验证版本 v1.19.29" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("button", { name: "安装已验证内核" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "系统代理未接入" })).toBeDisabled();
   });
 });

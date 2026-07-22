@@ -16,7 +16,6 @@ import {
 } from "../core/core-status";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
-import { FeatureBadge } from "../components/ui/feature-badge";
 import { PageHeading } from "../components/ui/page-heading";
 import { useCoreStore } from "../stores/core-store";
 import { useThemeStore } from "../stores/theme-store";
@@ -35,9 +34,9 @@ const themeOptions = [
 }[];
 
 const futureSections = [
-  { title: "常规设置", description: "开机启动、静默启动、窗口关闭行为与更新检查", phase: 2 },
-  { title: "网络设置", description: "代理端口、局域网访问、IPv6、UDP 与连接参数", phase: 6 },
-  { title: "高级设置", description: "诊断信息、数据目录、缓存与实验性能力", phase: 7 },
+  { title: "常规设置", description: "开机启动、静默启动、窗口关闭行为与更新检查" },
+  { title: "网络设置", description: "代理端口、局域网访问、IPv6、UDP 与连接参数" },
+  { title: "高级设置", description: "诊断信息、数据目录、缓存与实验性能力" },
 ] as const;
 
 export function SettingsPage() {
@@ -238,7 +237,7 @@ export function SettingsPage() {
                 <h2 className="text-sm font-semibold text-text">{section.title}</h2>
                 <p className="mt-1.5 text-xs leading-5 text-text-muted">{section.description}</p>
               </div>
-              <FeatureBadge phase={section.phase} />
+              <span className="shrink-0 rounded-full border border-line bg-surface-raised px-2.5 py-1 text-[10px] font-semibold text-text-subtle">未接入</span>
             </div>
           </Card>
         ))}
